@@ -1,7 +1,11 @@
 #include <ctype.h>
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #define LEVEL_COUNT 3
 #define MAX_ROWS 16
@@ -110,6 +114,14 @@ static const LevelTemplate LEVELS[LEVEL_COUNT] = {
         }
     }
 };
+
+static void setup_console_encoding(void) {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+    setlocale(LC_ALL, ".UTF-8");
+}
 
 static void clear_screen(void) {
     int result = system("cls");
@@ -599,6 +611,7 @@ int main(void) {
     int running = 1;
     int victory = 0;
 
+    setup_console_encoding();
     clear_screen();
     printf("=== 迷宫游戏（字符版）===\n");
     printf("1. 新游戏\n");
