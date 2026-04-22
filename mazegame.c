@@ -4,12 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
+#include <conio.h>
 #include <windows.h>
 #endif
 
 #define LEVEL_COUNT 3
-#define MAX_ROWS 16
-#define MAX_COLS 32
+#define MAX_ROWS 24
+#define MAX_COLS 44
 #define MAX_ENEMIES 8
 #define MAX_TELEPORTS 8
 #define SAVE_FILE "save.txt"
@@ -41,7 +42,8 @@ typedef struct {
     int cols;
     int hp;
     int gold;
-    int hasKey;
+    int keyCount;
+    int requiredKeys;
     int steps;
     int playerRow;
     int playerCol;
@@ -58,78 +60,212 @@ typedef struct {
 static const LevelTemplate LEVELS[LEVEL_COUNT] = {
     {
         13,
-        21,
+        23,
         {
-            "#####################",
-            "#P...#.....C....#..D#",
-            "#.#.#.#####.###.#.#.#",
-            "#.#...#...#...#.#.#.#",
-            "#.###.#.T.#.#.#.#.#.#",
-            "#...#.#...#.#.#...#.#",
-            "###.#.###.#.#.#####.#",
-            "#...#.....#.#.....#.#",
-            "#.#####.###.#####.#.#",
-            "#.....#...#.....#.#.#",
-            "#.###.###.#####.#.#.#",
-            "#K..O....H....O...C.#",
-            "#####################"
+            "#######################",
+            "#P....#......#......D.#",
+            "#.....#..##..#........#",
+            "#.....#...............#",
+            "#..######..#####......#",
+            "#..........T..........#",
+            "#..####....####....#..#",
+            "#......O..............#",
+            "#.............C.......#",
+            "#..####....####....#..#",
+            "#..#K.......O....H.#..#",
+            "#.....................#",
+            "#######################"
         }
     },
     {
-        13,
-        21,
+        19,
+        35,
         {
-            "#####################",
-            "#P....#...C....#...D#",
-            "#####.#.#####.#.###.#",
-            "#.....#...#...#...#.#",
-            "#.#######.#.#####.#.#",
-            "#...T.....#.....#.#.#",
-            "#.#####.#####.#.#.#.#",
-            "#.#...#...V...#.#...#",
-            "#.#.#.#######.#.###.#",
-            "#...#.....O...#...#.#",
-            "###.#####.###.###.#.#",
-            "#K....C...O.....#...#",
-            "#####################"
+            "###################################",
+            "#P......#.............#.........D.#",
+            "#.......#..######.....#...........#",
+            "#.......#.............#...........#",
+            "#..########..#..##########........#",
+            "#...K...T.........................#",
+            "#..#####..#####..#####..#####.....#",
+            "#..#...#....V...........#...#.....#",
+            "#..#...#................#...#.....#",
+            "#..#####..#####..#####..#####.....#",
+            "#..........O.....C..............H.#",
+            "#..#####..#####..#####..#####.....#",
+            "#..#...#....O...........#...#.....#",
+            "#..#...#................#...#.....#",
+            "#..#####..#####..#####..#####.....#",
+            "#..............#####......K.......#",
+            "#...########..............###.....#",
+            "#.................................#",
+            "###################################"
         }
     },
     {
-        13,
         21,
+        39,
         {
-            "#####################",
-            "#P...#......C..#...D#",
-            "#.#.#.######.#.#.#.##",
-            "#.#.#....T...#.#.#..#",
-            "#.#.##########.#.##.#",
-            "#.#......O.....#....#",
-            "#.######.#####.####.#",
-            "#....C.#...#...#....#",
-            "####.#.###.#.###.##.#",
-            "#K...#...#.#...#.#..#",
-            "#.#####.#.#.#.#.#.###",
-            "#....O..#..S#...#...#",
-            "#####################"
+            "#######################################",
+            "#P......#.................#........D..#",
+            "#.......#..##########.....#...........#",
+            "#.......#.................#...........#",
+            "#..#########..#####..###..#####.......#",
+            "#..........T..........................#",
+            "#..#####..#########..#................#",
+            "#..#...#....O........#..........H.....#",
+            "#..#...#.............#................#",
+            "#..#####..#####..#####....######......#",
+            "#......C.........................S....#",
+            "#..#####..#####..#####................#",
+            "#..#...#....O....#...#................#",
+            "#..#...#.........#...#.....#####......#",
+            "#..#####..#####..#####................#",
+            "#....K.........#####..................#",
+            "#...########..............###.........#",
+            "#...............T..............V......#",
+            "#..##########..............#####......#",
+            "#.....................................#",
+            "#######################################"
         }
     }
 };
 
+#ifdef _WIN32
+static HANDLE g_console = NULL;
+static WORD g_default_attributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
+#endif
+
+static void set_cursor_visible(int visible) {
+#ifdef _WIN32
+    CONSOLE_CURSOR_INFO cursorInfo;
+
+    if (g_console == NULL) {
+        return;
+    }
+    if (GetConsoleCursorInfo(g_console, &cursorInfo)) {
+        cursorInfo.bVisible = visible ? TRUE : FALSE;
+        SetConsoleCursorInfo(g_console, &cursorInfo);
+    }
+#else
+    (void)visible;
+#endif
+}
+
 static void setup_console_encoding(void) {
 #ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
+
+    g_console = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (g_console != NULL && GetConsoleScreenBufferInfo(g_console, &consoleInfo)) {
+        g_default_attributes = consoleInfo.wAttributes;
+    }
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #endif
     setlocale(LC_ALL, ".UTF-8");
+    set_cursor_visible(0);
 }
 
 static void clear_screen(void) {
+#ifdef _WIN32
+    if (g_console != NULL) {
+        COORD topLeft = {0, 0};
+        SetConsoleCursorPosition(g_console, topLeft);
+        return;
+    }
+#endif
     int result = system("cls");
     if (result != 0) {
         for (int i = 0; i < 30; ++i) {
             putchar('\n');
         }
     }
+}
+
+static int read_game_key(void) {
+#ifdef _WIN32
+    int ch = _getch();
+    if (ch == 0 || ch == 224) {
+        (void)_getch();
+        return 0;
+    }
+    return ch;
+#else
+    return getchar();
+#endif
+}
+
+static int key_available(void) {
+#ifdef _WIN32
+    return _kbhit();
+#else
+    return 1;
+#endif
+}
+
+static void sleep_ms(unsigned int ms) {
+#ifdef _WIN32
+    Sleep(ms);
+#else
+    (void)ms;
+#endif
+}
+
+static unsigned long long current_time_ms(void) {
+#ifdef _WIN32
+    return GetTickCount64();
+#else
+    return 0;
+#endif
+}
+
+static void set_tile_color(char tile) {
+#ifdef _WIN32
+    if (g_console == NULL) {
+        return;
+    }
+
+    switch (tile) {
+        case 'C':
+            SetConsoleTextAttribute(
+                g_console,
+                FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY
+            );
+            break;
+        case 'K':
+            SetConsoleTextAttribute(
+                g_console,
+                FOREGROUND_RED | FOREGROUND_GREEN
+            );
+            break;
+        case 'T':
+            SetConsoleTextAttribute(
+                g_console,
+                FOREGROUND_RED | FOREGROUND_INTENSITY
+            );
+            break;
+        case 'O':
+            SetConsoleTextAttribute(
+                g_console,
+                FOREGROUND_BLUE | FOREGROUND_INTENSITY
+            );
+            break;
+        default:
+            SetConsoleTextAttribute(g_console, g_default_attributes);
+            break;
+    }
+#else
+    (void)tile;
+#endif
+}
+
+static void reset_tile_color(void) {
+#ifdef _WIN32
+    if (g_console != NULL) {
+        SetConsoleTextAttribute(g_console, g_default_attributes);
+    }
+#endif
 }
 
 static void set_message(GameState *game, const char *text) {
@@ -212,7 +348,8 @@ static void load_level(GameState *game, int levelIndex, int keepProgress) {
     game->currentLevel = levelIndex;
     game->rows = level->rows;
     game->cols = level->cols;
-    game->hasKey = 0;
+    game->keyCount = 0;
+    game->requiredKeys = 0;
     game->enemyCount = 0;
     game->teleportCount = 0;
 
@@ -233,6 +370,8 @@ static void load_level(GameState *game, int levelIndex, int keepProgress) {
                 game->map[r][c] = tile;
                 if (tile == 'O') {
                     add_teleport(game, r, c);
+                } else if (tile == 'K') {
+                    game->requiredKeys++;
                 }
             }
         }
@@ -252,32 +391,62 @@ static void start_new_game(GameState *game) {
     load_level(game, 0, 0);
 }
 
+static const char *display_symbol(char tile) {
+    static char fallback[2];
+
+    switch (tile) {
+        case '#':
+            return "█";
+        case 'P':
+            return "@";
+        case 'C':
+            return "$";
+        case 'T':
+            return "!";
+        case 'H':
+        case 'V':
+        case 'S':
+            return "X";
+        default:
+            fallback[0] = tile;
+            fallback[1] = '\0';
+            return fallback;
+    }
+}
+
+static void draw_tile(char tile) {
+    set_tile_color(tile);
+    fputs(display_symbol(tile), stdout);
+    reset_tile_color();
+}
+
 static void draw_game(const GameState *game) {
     clear_screen();
     printf("=== 迷宫游戏（字符版）===\n");
     printf(
-        "关卡:%d/%d  生命:%d  金币:%d  钥匙:%s  步数:%d\n",
+        "关卡:%d/%d  生命:%d  金币:%d  钥匙:%d/%d  步数:%d\n",
         game->currentLevel + 1,
         LEVEL_COUNT,
         game->hp,
         game->gold,
-        game->hasKey ? "有" : "无",
+        game->keyCount,
+        game->requiredKeys,
         game->steps
     );
-    printf("操作: w/a/s/d 移动, p 保存, o 读档, q 退出\n");
-    printf("图例: #墙 P玩家 D门 K钥匙 C金币 T陷阱 O传送 H/V/S敌人\n");
+    printf("操作: 直接按 w/a/s/d 移动, p 保存, o 读档, q 退出\n");
+    printf("图例: █墙 @玩家 D门 K钥匙 $金币 !陷阱 O传送 X敌人\n");
     printf("消息: %s\n\n", game->message);
 
     for (int r = 0; r < game->rows; ++r) {
         for (int c = 0; c < game->cols; ++c) {
             if (game->playerRow == r && game->playerCol == c) {
-                putchar('P');
+                draw_tile('P');
             } else {
                 int enemyIndex = enemy_at(game, r, c);
                 if (enemyIndex >= 0) {
-                    putchar(game->enemies[enemyIndex].type);
+                    draw_tile(game->enemies[enemyIndex].type);
                 } else {
-                    putchar(game->map[r][c]);
+                    draw_tile(game->map[r][c]);
                 }
             }
         }
@@ -321,13 +490,14 @@ static int save_game(const GameState *game) {
 
     fprintf(
         fp,
-        "%d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+        "%d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
         game->currentLevel,
         game->rows,
         game->cols,
         game->hp,
         game->gold,
-        game->hasKey,
+        game->keyCount,
+        game->requiredKeys,
         game->steps,
         game->playerRow,
         game->playerCol,
@@ -372,13 +542,14 @@ static int load_game(GameState *game) {
 
     if (fscanf(
             fp,
-            "%d %d %d %d %d %d %d %d %d %d %d %d %d",
+            "%d %d %d %d %d %d %d %d %d %d %d %d %d %d",
             &game->currentLevel,
             &game->rows,
             &game->cols,
             &game->hp,
             &game->gold,
-            &game->hasKey,
+            &game->keyCount,
+            &game->requiredKeys,
             &game->steps,
             &game->playerRow,
             &game->playerCol,
@@ -386,7 +557,7 @@ static int load_game(GameState *game) {
             &game->startCol,
             &game->enemyCount,
             &game->teleportCount
-        ) != 13) {
+        ) != 14) {
         fclose(fp);
         return 0;
     }
@@ -448,9 +619,15 @@ static int handle_special_tile(GameState *game) {
     char tile = game->map[game->playerRow][game->playerCol];
 
     if (tile == 'K') {
-        game->hasKey = 1;
+        game->keyCount++;
         game->map[game->playerRow][game->playerCol] = '.';
-        set_message(game, "你拿到了钥匙。");
+        snprintf(
+            game->message,
+            sizeof(game->message),
+            "你拿到了钥匙。当前进度 %d/%d。",
+            game->keyCount,
+            game->requiredKeys
+        );
     } else if (tile == 'C') {
         game->gold++;
         game->map[game->playerRow][game->playerCol] = '.';
@@ -475,10 +652,16 @@ static int handle_special_tile(GameState *game) {
             }
         }
     } else if (tile == 'D') {
-        if (game->hasKey) {
+        if (game->keyCount >= game->requiredKeys) {
             return 1;
         }
-        set_message(game, "没有钥匙，无法开门。");
+        snprintf(
+            game->message,
+            sizeof(game->message),
+            "钥匙还没找全，当前 %d/%d，无法开门。",
+            game->keyCount,
+            game->requiredKeys
+        );
     }
 
     return 0;
@@ -578,8 +761,14 @@ static int process_move(GameState *game, int dRow, int dCol) {
         return 0;
     }
 
-    if (tile == 'D' && !game->hasKey) {
-        set_message(game, "没有钥匙，无法开门。");
+    if (tile == 'D' && game->keyCount < game->requiredKeys) {
+        snprintf(
+            game->message,
+            sizeof(game->message),
+            "钥匙还没找全，当前 %d/%d，无法开门。",
+            game->keyCount,
+            game->requiredKeys
+        );
         return 0;
     }
 
@@ -608,8 +797,11 @@ static int process_move(GameState *game, int dRow, int dCol) {
 int main(void) {
     GameState game;
     char input[32];
+    int inputChar;
+    int needsRedraw = 1;
     int running = 1;
     int victory = 0;
+    unsigned long long lastEnemyMove = 0;
 
     setup_console_encoding();
     clear_screen();
@@ -632,20 +824,43 @@ int main(void) {
         start_new_game(&game);
     }
 
+    lastEnemyMove = current_time_ms();
+
     while (running) {
         int stateAfterMove = 0;
-        draw_game(&game);
+
+        if (needsRedraw) {
+            draw_game(&game);
+            needsRedraw = 0;
+        }
 
         if (game.hp <= 0) {
             break;
         }
 
-        printf("\n请输入操作：");
-        if (fgets(input, sizeof(input), stdin) == NULL) {
-            break;
+        if (current_time_ms() - lastEnemyMove >= 800) {
+            int enemyResult = move_enemies(&game);
+            lastEnemyMove = current_time_ms();
+            needsRedraw = 1;
+            if (enemyResult == -1) {
+                continue;
+            }
         }
 
-        switch (tolower((unsigned char)input[0])) {
+        if (!key_available()) {
+            sleep_ms(20);
+            continue;
+        }
+
+        inputChar = read_game_key();
+        if (inputChar == EOF) {
+            break;
+        }
+        if (inputChar == 0) {
+            continue;
+        }
+
+        switch (tolower((unsigned char)inputChar)) {
             case 'w':
                 stateAfterMove = process_move(&game, -1, 0);
                 break;
@@ -664,6 +879,7 @@ int main(void) {
                 } else {
                     set_message(&game, "保存失败。");
                 }
+                needsRedraw = 1;
                 continue;
             case 'o':
                 if (load_game(&game)) {
@@ -671,14 +887,19 @@ int main(void) {
                 } else {
                     set_message(&game, "读档失败，没有找到有效存档。");
                 }
+                lastEnemyMove = current_time_ms();
+                needsRedraw = 1;
                 continue;
             case 'q':
                 running = 0;
                 continue;
             default:
                 set_message(&game, "无效操作，请输入 w/a/s/d/p/o/q。");
+                needsRedraw = 1;
                 continue;
         }
+
+        needsRedraw = 1;
 
         if (stateAfterMove == -1) {
             continue;
@@ -689,25 +910,24 @@ int main(void) {
                 victory = 1;
                 break;
             }
+            lastEnemyMove = current_time_ms();
             continue;
-        }
-
-        if (stateAfterMove > 0) {
-            int enemyResult = move_enemies(&game);
-            if (enemyResult == -1) {
-                continue;
-            }
         }
     }
 
     draw_game(&game);
     if (victory) {
-        printf("\n你成功完成了全部 3 个关卡，最终金币数：%d，步数：%d\n", game.gold, game.steps);
+        printf("\nYou Win!\n");
+        printf("你成功完成了全部 3 个关卡，最终金币数：%d，步数：%d\n", game.gold, game.steps);
+        printf("按任意键退出...");
+        fflush(stdout);
+        (void)read_game_key();
     } else if (game.hp <= 0) {
         printf("\n游戏结束。最终金币数：%d，步数：%d\n", game.gold, game.steps);
     } else {
         printf("\n你已退出游戏。\n");
     }
 
+    set_cursor_visible(1);
     return 0;
 }
