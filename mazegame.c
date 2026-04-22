@@ -12,7 +12,6 @@
 #define LEVEL_COUNT 3
 #define MAX_ROWS 24
 #define MAX_COLS 44
-#define MAX_ENEMIES 8
 #define MAX_TELEPORTS 8
 #define SAVE_FILE "save.txt"
 
@@ -27,19 +26,7 @@ typedef struct {
     int keyTotal;
     int goldTotal;
     int teleportPairs;
-    int enemyCount;
-    char enemyTypes[MAX_ENEMIES];
 } LevelConfig;
-
-typedef struct {
-    int row;
-    int col;
-    int startRow;
-    int startCol;
-    int dirRow;
-    int dirCol;
-    char type;
-} Enemy;
 
 typedef struct {
     int currentLevel;
@@ -54,18 +41,16 @@ typedef struct {
     int playerCol;
     int startRow;
     int startCol;
-    int enemyCount;
     int teleportCount;
     char map[MAX_ROWS][MAX_COLS + 1];
-    Enemy enemies[MAX_ENEMIES];
     Point teleports[MAX_TELEPORTS];
     char message[128];
 } GameState;
 
 static const LevelConfig LEVELS[LEVEL_COUNT] = {
-    {13, 23, 1, 1, 1, 1, {'H'}},
-    {19, 35, 2, 2, 1, 2, {'H', 'V'}},
-    {21, 39, 2, 2, 1, 3, {'H', 'V', 'S'}}
+    {13, 23, 1, 1, 1},
+    {19, 35, 2, 2, 1},
+    {21, 39, 2, 2, 1}
 };
 
 #ifdef _WIN32
@@ -107,9 +92,23 @@ static void setup_console_encoding(void) {
 static void clear_screen(void) {
 #ifdef _WIN32
     if (g_console != NULL) {
+        CONSOLE_SCREEN_BUFFER_INFO info;
         COORD topLeft = {0, 0};
-        SetConsoleCursorPosition(g_console, topLeft);
-        return;
+        DWORD written = 0;
+
+        if (GetConsoleScreenBufferInfo(g_console, &info)) {
+            DWORD cellCount = (DWORD)info.dwSize.X * (DWORD)info.dwSize.Y;
+            FillConsoleOutputCharacterA(g_console, ' ', cellCount, topLeft, &written);
+            FillConsoleOutputAttribute(
+                g_console,
+                info.wAttributes,
+                cellCount,
+                topLeft,
+                &written
+            );
+            SetConsoleCursorPosition(g_console, topLeft);
+            return;
+        }
     }
 #endif
     int result = system("cls");
@@ -118,6 +117,46 @@ static void clear_screen(void) {
             putchar('\n');
         }
     }
+}
+
+static void move_cursor_home(void) {
+#ifdef _WIN32
+    if (g_console != NULL) {
+        COORD topLeft = {0, 0};
+        SetConsoleCursorPosition(g_console, topLeft);
+        return;
+    }
+#endif
+    fputs("\033[H", stdout);
+}
+
+static void clear_to_line_end(void) {
+#ifdef _WIN32
+    if (g_console != NULL) {
+        CONSOLE_SCREEN_BUFFER_INFO info;
+        DWORD written = 0;
+
+        if (GetConsoleScreenBufferInfo(g_console, &info)) {
+            DWORD cellCount = (DWORD)(info.dwSize.X - info.dwCursorPosition.X);
+            FillConsoleOutputCharacterA(
+                g_console,
+                ' ',
+                cellCount,
+                info.dwCursorPosition,
+                &written
+            );
+            FillConsoleOutputAttribute(
+                g_console,
+                g_default_attributes,
+                cellCount,
+                info.dwCursorPosition,
+                &written
+            );
+        }
+        return;
+    }
+#endif
+    fputs("\033[K", stdout);
 }
 
 static int read_game_key(void) {
@@ -130,30 +169,6 @@ static int read_game_key(void) {
     return ch;
 #else
     return getchar();
-#endif
-}
-
-static int key_available(void) {
-#ifdef _WIN32
-    return _kbhit();
-#else
-    return 1;
-#endif
-}
-
-static void sleep_ms(unsigned int ms) {
-#ifdef _WIN32
-    Sleep(ms);
-#else
-    (void)ms;
-#endif
-}
-
-static unsigned long long current_time_ms(void) {
-#ifdef _WIN32
-    return GetTickCount64();
-#else
-    return 0;
 #endif
 }
 
@@ -203,55 +218,8 @@ static void set_message(GameState *game, const char *text) {
     snprintf(game->message, sizeof(game->message), "%s", text);
 }
 
-static int enemy_at(const GameState *game, int row, int col) {
-    for (int i = 0; i < game->enemyCount; ++i) {
-        if (game->enemies[i].row == row && game->enemies[i].col == col) {
-            return i;
-        }
-    }
-    return -1;
-}
-
 static int tile_blocked_for_player(char tile) {
     return tile == '#';
-}
-
-static int tile_blocked_for_enemy(char tile) {
-    return tile == '#';
-}
-
-static void apply_player_damage(GameState *game, const char *reason) {
-    game->hp--;
-    if (game->hp > 0) {
-        game->playerRow = game->startRow;
-        game->playerCol = game->startCol;
-        snprintf(game->message, sizeof(game->message), "%s 生命值 -1，已回到起点。", reason);
-    } else {
-        snprintf(game->message, sizeof(game->message), "%s 生命值归零，游戏失败。", reason);
-    }
-}
-
-static void add_enemy(GameState *game, int row, int col, char type) {
-    Enemy *enemy;
-
-    if (game->enemyCount >= MAX_ENEMIES) {
-        return;
-    }
-
-    enemy = &game->enemies[game->enemyCount++];
-    enemy->row = row;
-    enemy->col = col;
-    enemy->startRow = row;
-    enemy->startCol = col;
-    enemy->type = type;
-    enemy->dirRow = 0;
-    enemy->dirCol = 0;
-
-    if (type == 'H') {
-        enemy->dirCol = 1;
-    } else if (type == 'V') {
-        enemy->dirRow = 1;
-    }
 }
 
 static void add_teleport(GameState *game, int row, int col) {
@@ -429,7 +397,6 @@ static int choose_random_empty_cell(
     int dist[MAX_ROWS][MAX_COLS],
     int minDistance,
     int requireDeadEnd,
-    int requireOpenArea,
     Point *chosen
 ) {
     Point candidates[MAX_ROWS * MAX_COLS];
@@ -450,9 +417,6 @@ static int choose_random_empty_cell(
                     continue;
                 }
                 if (requireDeadEnd && count_open_neighbors(game, r, c) != 1) {
-                    continue;
-                }
-                if (requireOpenArea && count_open_neighbors(game, r, c) < 2) {
                     continue;
                 }
                 candidates[candidateCount++] = (Point){r, c};
@@ -479,8 +443,8 @@ static void place_tile_items(
     for (int i = 0; i < count; ++i) {
         Point target;
 
-        if (!choose_random_empty_cell(game, dist, minDistance, preferDeadEnd, 0, &target)) {
-            if (!choose_random_empty_cell(game, dist, minDistance, 0, 0, &target)) {
+        if (!choose_random_empty_cell(game, dist, minDistance, preferDeadEnd, &target)) {
+            if (!choose_random_empty_cell(game, dist, minDistance, 0, &target)) {
                 return;
             }
         }
@@ -488,38 +452,6 @@ static void place_tile_items(
         game->map[target.row][target.col] = tile;
         if (tile == 'O') {
             add_teleport(game, target.row, target.col);
-        }
-    }
-}
-
-static int enemy_spawn_occupied(const GameState *game, int row, int col) {
-    for (int i = 0; i < game->enemyCount; ++i) {
-        if (game->enemies[i].row == row && game->enemies[i].col == col) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static void place_enemies(GameState *game, const LevelConfig *level, int dist[MAX_ROWS][MAX_COLS], int minDistance) {
-    for (int i = 0; i < level->enemyCount; ++i) {
-        Point target;
-        int placed = 0;
-
-        for (int attempt = 0; attempt < 24; ++attempt) {
-            if (!choose_random_empty_cell(game, dist, minDistance, 0, 1, &target)) {
-                break;
-            }
-            if (enemy_spawn_occupied(game, target.row, target.col)) {
-                continue;
-            }
-            add_enemy(game, target.row, target.col, level->enemyTypes[i]);
-            placed = 1;
-            break;
-        }
-
-        if (!placed) {
-            return;
         }
     }
 }
@@ -542,10 +474,9 @@ static void generate_level(GameState *game, const LevelConfig *level) {
     game->map[door.row][door.col] = 'D';
 
     game->requiredKeys = level->keyTotal;
-    place_tile_items(game, 'K', level->keyTotal, dist, 6, 0);
+    place_tile_items(game, 'K', level->keyTotal, dist, 8, 1);
     place_tile_items(game, 'C', level->goldTotal, dist, 4, 0);
     place_tile_items(game, 'O', level->teleportPairs * 2, dist, 4, 1);
-    place_enemies(game, level, dist, 7);
 }
 
 static void load_level(GameState *game, int levelIndex, int keepProgress) {
@@ -559,14 +490,13 @@ static void load_level(GameState *game, int levelIndex, int keepProgress) {
 
     game->currentLevel = levelIndex;
     game->keyCount = 0;
-    game->enemyCount = 0;
     game->teleportCount = 0;
     generate_level(game, level);
 
     snprintf(
         game->message,
         sizeof(game->message),
-        "已进入第 %d 关。迷宫已重新生成，先找钥匙，再去开门。",
+        "已进入第 %d 关，先找钥匙，再去开门",
         game->currentLevel + 1
     );
 }
@@ -588,10 +518,6 @@ static const char *display_symbol(char tile) {
             return "@";
         case 'C':
             return "$";
-        case 'H':
-        case 'V':
-        case 'S':
-            return "X";
         default:
             fallback[0] = tile;
             fallback[1] = '\0';
@@ -606,10 +532,17 @@ static void draw_tile(char tile) {
 }
 
 static void draw_game(const GameState *game) {
-    clear_screen();
-    printf("=== 迷宫游戏（字符版）===\n");
+    static int previousFrameLines = 0;
+    int currentFrameLines = 0;
+
+    move_cursor_home();
+
+    printf("=== 迷宫游戏(神秘版) ===");
+    clear_to_line_end();
+    putchar('\n');
+    currentFrameLines++;
     printf(
-        "关卡:%d/%d  生命:%d  金币:%d  钥匙:%d/%d  步数:%d\n",
+        "关卡:%d/%d  生命:%d  金币:%d  钥匙:%d/%d  步数:%d",
         game->currentLevel + 1,
         LEVEL_COUNT,
         game->hp,
@@ -618,25 +551,45 @@ static void draw_game(const GameState *game) {
         game->requiredKeys,
         game->steps
     );
-    printf("操作: 直接按 w/a/s/d 移动, p 保存, o 读档, q 退出\n");
-    printf("图例: █墙 @玩家 D门 K钥匙 $金币 O传送 X敌人\n");
-    printf("消息: %s\n\n", game->message);
+    clear_to_line_end();
+    putchar('\n');
+    currentFrameLines++;
+    printf("操作: 直接按 w/a/s/d 移动, p 保存, o 读档, q 退出");
+    clear_to_line_end();
+    putchar('\n');
+    currentFrameLines++;
+    printf("图例: █墙 @玩家 D门 K钥匙 $金币 O传送");
+    clear_to_line_end();
+    putchar('\n');
+    currentFrameLines++;
+    printf("消息: %s", game->message);
+    clear_to_line_end();
+    putchar('\n');
+    currentFrameLines++;
+    clear_to_line_end();
+    putchar('\n');
+    currentFrameLines++;
 
     for (int r = 0; r < game->rows; ++r) {
         for (int c = 0; c < game->cols; ++c) {
             if (game->playerRow == r && game->playerCol == c) {
                 draw_tile('P');
             } else {
-                int enemyIndex = enemy_at(game, r, c);
-                if (enemyIndex >= 0) {
-                    draw_tile(game->enemies[enemyIndex].type);
-                } else {
-                    draw_tile(game->map[r][c]);
-                }
+                draw_tile(game->map[r][c]);
             }
         }
+        clear_to_line_end();
+        putchar('\n');
+        currentFrameLines++;
+    }
+
+    for (int r = currentFrameLines; r < previousFrameLines; ++r) {
+        clear_to_line_end();
         putchar('\n');
     }
+
+    previousFrameLines = currentFrameLines;
+    fflush(stdout);
 }
 
 static int get_teleport_destination(
@@ -675,7 +628,7 @@ static int save_game(const GameState *game) {
 
     fprintf(
         fp,
-        "%d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+        "%d %d %d %d %d %d %d %d %d %d %d %d %d\n",
         game->currentLevel,
         game->rows,
         game->cols,
@@ -688,26 +641,11 @@ static int save_game(const GameState *game) {
         game->playerCol,
         game->startRow,
         game->startCol,
-        game->enemyCount,
         game->teleportCount
     );
 
     for (int r = 0; r < game->rows; ++r) {
         fprintf(fp, "%s\n", game->map[r]);
-    }
-
-    for (int i = 0; i < game->enemyCount; ++i) {
-        fprintf(
-            fp,
-            "%d %d %d %d %d %d %c\n",
-            game->enemies[i].row,
-            game->enemies[i].col,
-            game->enemies[i].startRow,
-            game->enemies[i].startCol,
-            game->enemies[i].dirRow,
-            game->enemies[i].dirCol,
-            game->enemies[i].type
-        );
     }
 
     for (int i = 0; i < game->teleportCount; ++i) {
@@ -727,7 +665,7 @@ static int load_game(GameState *game) {
 
     if (fscanf(
             fp,
-            "%d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+            "%d %d %d %d %d %d %d %d %d %d %d %d %d",
             &game->currentLevel,
             &game->rows,
             &game->cols,
@@ -740,15 +678,14 @@ static int load_game(GameState *game) {
             &game->playerCol,
             &game->startRow,
             &game->startCol,
-            &game->enemyCount,
             &game->teleportCount
-        ) != 14) {
+        ) != 12) {
         fclose(fp);
         return 0;
     }
 
     if (game->rows > MAX_ROWS || game->cols > MAX_COLS ||
-        game->enemyCount > MAX_ENEMIES || game->teleportCount > MAX_TELEPORTS) {
+        game->teleportCount > MAX_TELEPORTS) {
         fclose(fp);
         return 0;
     }
@@ -761,23 +698,6 @@ static int load_game(GameState *game) {
         game->map[r][game->cols] = '\0';
     }
 
-    for (int i = 0; i < game->enemyCount; ++i) {
-        if (fscanf(
-                fp,
-                "%d %d %d %d %d %d %c",
-                &game->enemies[i].row,
-                &game->enemies[i].col,
-                &game->enemies[i].startRow,
-                &game->enemies[i].startCol,
-                &game->enemies[i].dirRow,
-                &game->enemies[i].dirCol,
-                &game->enemies[i].type
-            ) != 7) {
-            fclose(fp);
-            return 0;
-        }
-    }
-
     for (int i = 0; i < game->teleportCount; ++i) {
         if (fscanf(fp, "%d %d", &game->teleports[i].row, &game->teleports[i].col) != 2) {
             fclose(fp);
@@ -786,13 +706,13 @@ static int load_game(GameState *game) {
     }
 
     fclose(fp);
-    set_message(game, "读档成功。");
+    set_message(game, "读档成功");
     return 1;
 }
 
 static int try_advance_level(GameState *game) {
     if (game->currentLevel + 1 >= LEVEL_COUNT) {
-        set_message(game, "你已经通关全部关卡。");
+        set_message(game, "你已经通关全部关卡");
         return 1;
     }
 
@@ -809,27 +729,21 @@ static int handle_special_tile(GameState *game) {
         snprintf(
             game->message,
             sizeof(game->message),
-            "你拿到了钥匙。当前进度 %d/%d。",
+            "你拿到了钥匙，当前进度 %d/%d",
             game->keyCount,
             game->requiredKeys
         );
     } else if (tile == 'C') {
         game->gold++;
         game->map[game->playerRow][game->playerCol] = '.';
-        set_message(game, "你捡到了一枚金币。");
+        set_message(game, "你捡到了一枚金币");
     } else if (tile == 'O') {
         int targetRow;
         int targetCol;
         if (get_teleport_destination(game, game->playerRow, game->playerCol, &targetRow, &targetCol)) {
             game->playerRow = targetRow;
             game->playerCol = targetCol;
-            set_message(game, "你被传送到了另一处。");
-            if (enemy_at(game, game->playerRow, game->playerCol) >= 0) {
-                apply_player_damage(game, "你刚传送出来就撞上了敌人。");
-                if (game->hp <= 0) {
-                    return -1;
-                }
-            }
+            set_message(game, "你被传送到了另一处");
         }
     } else if (tile == 'D') {
         if (game->keyCount >= game->requiredKeys) {
@@ -838,88 +752,10 @@ static int handle_special_tile(GameState *game) {
         snprintf(
             game->message,
             sizeof(game->message),
-            "钥匙还没找全，当前 %d/%d，无法开门。",
+            "钥匙还没找全，当前 %d/%d，无法开门",
             game->keyCount,
             game->requiredKeys
         );
-    }
-
-    return 0;
-}
-
-static void move_horizontal_enemy(GameState *game, Enemy *enemy) {
-    int nextCol = enemy->col + enemy->dirCol;
-    if (tile_blocked_for_enemy(game->map[enemy->row][nextCol])) {
-        enemy->dirCol = -enemy->dirCol;
-        nextCol = enemy->col + enemy->dirCol;
-    }
-    if (!tile_blocked_for_enemy(game->map[enemy->row][nextCol])) {
-        enemy->col = nextCol;
-    }
-}
-
-static void move_vertical_enemy(GameState *game, Enemy *enemy) {
-    int nextRow = enemy->row + enemy->dirRow;
-    if (tile_blocked_for_enemy(game->map[nextRow][enemy->col])) {
-        enemy->dirRow = -enemy->dirRow;
-        nextRow = enemy->row + enemy->dirRow;
-    }
-    if (!tile_blocked_for_enemy(game->map[nextRow][enemy->col])) {
-        enemy->row = nextRow;
-    }
-}
-
-static void move_chasing_enemy(const GameState *game, Enemy *enemy) {
-    int rowStep = 0;
-    int colStep = 0;
-
-    if (game->playerRow > enemy->row) {
-        rowStep = 1;
-    } else if (game->playerRow < enemy->row) {
-        rowStep = -1;
-    }
-
-    if (game->playerCol > enemy->col) {
-        colStep = 1;
-    } else if (game->playerCol < enemy->col) {
-        colStep = -1;
-    }
-
-    if (abs(game->playerRow - enemy->row) >= abs(game->playerCol - enemy->col)) {
-        if (rowStep != 0 && !tile_blocked_for_enemy(game->map[enemy->row + rowStep][enemy->col])) {
-            enemy->row += rowStep;
-            return;
-        }
-        if (colStep != 0 && !tile_blocked_for_enemy(game->map[enemy->row][enemy->col + colStep])) {
-            enemy->col += colStep;
-        }
-    } else {
-        if (colStep != 0 && !tile_blocked_for_enemy(game->map[enemy->row][enemy->col + colStep])) {
-            enemy->col += colStep;
-            return;
-        }
-        if (rowStep != 0 && !tile_blocked_for_enemy(game->map[enemy->row + rowStep][enemy->col])) {
-            enemy->row += rowStep;
-        }
-    }
-}
-
-static int move_enemies(GameState *game) {
-    for (int i = 0; i < game->enemyCount; ++i) {
-        Enemy *enemy = &game->enemies[i];
-
-        if (enemy->type == 'H') {
-            move_horizontal_enemy(game, enemy);
-        } else if (enemy->type == 'V') {
-            move_vertical_enemy(game, enemy);
-        } else if (enemy->type == 'S') {
-            move_chasing_enemy(game, enemy);
-        }
-
-        if (enemy->row == game->playerRow && enemy->col == game->playerCol) {
-            apply_player_damage(game, "你被敌人击中了。");
-            return game->hp <= 0 ? -1 : 1;
-        }
     }
 
     return 0;
@@ -931,13 +767,13 @@ static int process_move(GameState *game, int dRow, int dCol) {
     char tile;
 
     if (!is_inside_map(game, nextRow, nextCol)) {
-        set_message(game, "不能走出地图。");
+        set_message(game, "不能走出地图");
         return 0;
     }
 
     tile = game->map[nextRow][nextCol];
     if (tile_blocked_for_player(tile)) {
-        set_message(game, "前面是墙。");
+        set_message(game, "前面是墙");
         return 0;
     }
 
@@ -945,7 +781,7 @@ static int process_move(GameState *game, int dRow, int dCol) {
         snprintf(
             game->message,
             sizeof(game->message),
-            "钥匙还没找全，当前 %d/%d，无法开门。",
+            "钥匙还没找全，当前 %d/%d，无法开门",
             game->keyCount,
             game->requiredKeys
         );
@@ -955,11 +791,6 @@ static int process_move(GameState *game, int dRow, int dCol) {
     game->playerRow = nextRow;
     game->playerCol = nextCol;
     game->steps++;
-
-    if (enemy_at(game, game->playerRow, game->playerCol) >= 0) {
-        apply_player_damage(game, "你主动撞上了敌人。");
-        return game->hp <= 0 ? -1 : 0;
-    }
 
     {
         int special = handle_special_tile(game);
@@ -978,10 +809,8 @@ int main(void) {
     GameState game;
     char input[32];
     int inputChar;
-    int needsRedraw = 1;
     int running = 1;
     int victory = 0;
-    unsigned long long lastEnemyMove = 0;
 
     setup_console_encoding();
     seed_random();
@@ -999,38 +828,18 @@ int main(void) {
         memset(&game, 0, sizeof(game));
         if (!load_game(&game)) {
             start_new_game(&game);
-            set_message(&game, "没有找到有效存档，已开始新游戏。");
+            set_message(&game, "没有找到有效存档，已开始新游戏");
         }
     } else {
         start_new_game(&game);
     }
 
-    lastEnemyMove = current_time_ms();
-
     while (running) {
         int stateAfterMove = 0;
-
-        if (needsRedraw) {
-            draw_game(&game);
-            needsRedraw = 0;
-        }
+        draw_game(&game);
 
         if (game.hp <= 0) {
             break;
-        }
-
-        if (current_time_ms() - lastEnemyMove >= 800) {
-            int enemyResult = move_enemies(&game);
-            lastEnemyMove = current_time_ms();
-            needsRedraw = 1;
-            if (enemyResult == -1) {
-                continue;
-            }
-        }
-
-        if (!key_available()) {
-            sleep_ms(20);
-            continue;
         }
 
         inputChar = read_game_key();
@@ -1056,31 +865,25 @@ int main(void) {
                 break;
             case 'p':
                 if (save_game(&game)) {
-                    set_message(&game, "保存成功。");
+                    set_message(&game, "保存成功");
                 } else {
-                    set_message(&game, "保存失败。");
+                    set_message(&game, "保存失败");
                 }
-                needsRedraw = 1;
                 continue;
             case 'o':
                 if (load_game(&game)) {
-                    set_message(&game, "读档成功。");
+                    set_message(&game, "读档成功");
                 } else {
-                    set_message(&game, "读档失败，没有找到有效存档。");
+                    set_message(&game, "读档失败，没有找到有效存档");
                 }
-                lastEnemyMove = current_time_ms();
-                needsRedraw = 1;
                 continue;
             case 'q':
                 running = 0;
                 continue;
             default:
-                set_message(&game, "无效操作，请输入 w/a/s/d/p/o/q。");
-                needsRedraw = 1;
+                set_message(&game, "无效操作，请输入 w/a/s/d/p/o/q");
                 continue;
         }
-
-        needsRedraw = 1;
 
         if (stateAfterMove == -1) {
             continue;
@@ -1091,7 +894,6 @@ int main(void) {
                 victory = 1;
                 break;
             }
-            lastEnemyMove = current_time_ms();
             continue;
         }
     }
