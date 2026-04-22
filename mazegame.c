@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #include <conio.h>
 #include <windows.h>
@@ -21,6 +22,16 @@ typedef struct {
 } Point;
 
 typedef struct {
+    int rows;
+    int cols;
+    int keyTotal;
+    int goldTotal;
+    int teleportPairs;
+    int enemyCount;
+    char enemyTypes[MAX_ENEMIES];
+} LevelConfig;
+
+typedef struct {
     int row;
     int col;
     int startRow;
@@ -29,12 +40,6 @@ typedef struct {
     int dirCol;
     char type;
 } Enemy;
-
-typedef struct {
-    int rows;
-    int cols;
-    const char *data[MAX_ROWS];
-} LevelTemplate;
 
 typedef struct {
     int currentLevel;
@@ -57,78 +62,10 @@ typedef struct {
     char message[128];
 } GameState;
 
-static const LevelTemplate LEVELS[LEVEL_COUNT] = {
-    {
-        13,
-        23,
-        {
-            "#######################",
-            "#P....#......#......D.#",
-            "#.....#..##..#........#",
-            "#.....#...............#",
-            "#..######..#####......#",
-            "#..........T..........#",
-            "#..####....####....#..#",
-            "#......O..............#",
-            "#.............C.......#",
-            "#..####....####....#..#",
-            "#..#K.......O....H.#..#",
-            "#.....................#",
-            "#######################"
-        }
-    },
-    {
-        19,
-        35,
-        {
-            "###################################",
-            "#P......#.............#.........D.#",
-            "#.......#..######.....#...........#",
-            "#.......#.............#...........#",
-            "#..########..#..##########........#",
-            "#...K...T.........................#",
-            "#..#####..#####..#####..#####.....#",
-            "#..#...#....V...........#...#.....#",
-            "#..#...#................#...#.....#",
-            "#..#####..#####..#####..#####.....#",
-            "#..........O.....C..............H.#",
-            "#..#####..#####..#####..#####.....#",
-            "#..#...#....O...........#...#.....#",
-            "#..#...#................#...#.....#",
-            "#..#####..#####..#####..#####.....#",
-            "#..............#####......K.......#",
-            "#...########..............###.....#",
-            "#.................................#",
-            "###################################"
-        }
-    },
-    {
-        21,
-        39,
-        {
-            "#######################################",
-            "#P......#.................#........D..#",
-            "#.......#..##########.....#...........#",
-            "#.......#.................#...........#",
-            "#..#########..#####..###..#####.......#",
-            "#..........T..........................#",
-            "#..#####..#########..#................#",
-            "#..#...#....O........#..........H.....#",
-            "#..#...#.............#................#",
-            "#..#####..#####..#####....######......#",
-            "#......C.........................S....#",
-            "#..#####..#####..#####................#",
-            "#..#...#....O....#...#................#",
-            "#..#...#.........#...#.....#####......#",
-            "#..#####..#####..#####................#",
-            "#....K.........#####..................#",
-            "#...########..............###.........#",
-            "#...............T..............V......#",
-            "#..##########..............#####......#",
-            "#.....................................#",
-            "#######################################"
-        }
-    }
+static const LevelConfig LEVELS[LEVEL_COUNT] = {
+    {13, 23, 1, 1, 1, 1, {'H'}},
+    {19, 35, 2, 2, 1, 2, {'H', 'V'}},
+    {21, 39, 2, 2, 1, 3, {'H', 'V', 'S'}}
 };
 
 #ifdef _WIN32
@@ -239,12 +176,6 @@ static void set_tile_color(char tile) {
                 FOREGROUND_RED | FOREGROUND_GREEN
             );
             break;
-        case 'T':
-            SetConsoleTextAttribute(
-                g_console,
-                FOREGROUND_RED | FOREGROUND_INTENSITY
-            );
-            break;
         case 'O':
             SetConsoleTextAttribute(
                 g_console,
@@ -270,10 +201,6 @@ static void reset_tile_color(void) {
 
 static void set_message(GameState *game, const char *text) {
     snprintf(game->message, sizeof(game->message), "%s", text);
-}
-
-static int is_enemy_symbol(char ch) {
-    return ch == 'H' || ch == 'V' || ch == 'S';
 }
 
 static int enemy_at(const GameState *game, int row, int col) {
@@ -336,8 +263,293 @@ static void add_teleport(GameState *game, int row, int col) {
     game->teleportCount++;
 }
 
+static void seed_random(void) {
+    static int seeded = 0;
+
+    if (seeded) {
+        return;
+    }
+
+    seeded = 1;
+#ifdef _WIN32
+    srand((unsigned int)(time(NULL) ^ GetTickCount()));
+#else
+    srand((unsigned int)time(NULL));
+#endif
+}
+
+static void initialize_map(GameState *game, int rows, int cols) {
+    game->rows = rows;
+    game->cols = cols;
+
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            game->map[r][c] = '#';
+        }
+        game->map[r][cols] = '\0';
+    }
+}
+
+static void shuffle_ints(int *values, int count) {
+    for (int i = count - 1; i > 0; --i) {
+        int j = rand() % (i + 1);
+        int temp = values[i];
+        values[i] = values[j];
+        values[j] = temp;
+    }
+}
+
+static void generate_maze_layout(GameState *game) {
+    int stackRows[MAX_ROWS * MAX_COLS];
+    int stackCols[MAX_ROWS * MAX_COLS];
+    int top = 0;
+    const int dr[4] = {-1, 1, 0, 0};
+    const int dc[4] = {0, 0, -1, 1};
+
+    stackRows[0] = 1;
+    stackCols[0] = 1;
+    game->map[1][1] = '.';
+
+    while (top >= 0) {
+        int row = stackRows[top];
+        int col = stackCols[top];
+        int dirs[4] = {0, 1, 2, 3};
+        int carved = 0;
+
+        shuffle_ints(dirs, 4);
+
+        for (int i = 0; i < 4; ++i) {
+            int dir = dirs[i];
+            int nextRow = row + dr[dir] * 2;
+            int nextCol = col + dc[dir] * 2;
+
+            if (nextRow <= 0 || nextRow >= game->rows - 1 ||
+                nextCol <= 0 || nextCol >= game->cols - 1) {
+                continue;
+            }
+
+            if (game->map[nextRow][nextCol] != '#') {
+                continue;
+            }
+
+            game->map[row + dr[dir]][col + dc[dir]] = '.';
+            game->map[nextRow][nextCol] = '.';
+            ++top;
+            stackRows[top] = nextRow;
+            stackCols[top] = nextCol;
+            carved = 1;
+            break;
+        }
+
+        if (!carved) {
+            --top;
+        }
+    }
+}
+
+static void compute_distances(const GameState *game, int startRow, int startCol, int dist[MAX_ROWS][MAX_COLS]) {
+    Point queue[MAX_ROWS * MAX_COLS];
+    int head = 0;
+    int tail = 0;
+    const int dr[4] = {-1, 1, 0, 0};
+    const int dc[4] = {0, 0, -1, 1};
+
+    for (int r = 0; r < game->rows; ++r) {
+        for (int c = 0; c < game->cols; ++c) {
+            dist[r][c] = -1;
+        }
+    }
+
+    dist[startRow][startCol] = 0;
+    queue[tail++] = (Point){startRow, startCol};
+
+    while (head < tail) {
+        Point current = queue[head++];
+
+        for (int i = 0; i < 4; ++i) {
+            int nextRow = current.row + dr[i];
+            int nextCol = current.col + dc[i];
+
+            if (nextRow < 0 || nextRow >= game->rows || nextCol < 0 || nextCol >= game->cols) {
+                continue;
+            }
+            if (game->map[nextRow][nextCol] == '#') {
+                continue;
+            }
+            if (dist[nextRow][nextCol] != -1) {
+                continue;
+            }
+
+            dist[nextRow][nextCol] = dist[current.row][current.col] + 1;
+            queue[tail++] = (Point){nextRow, nextCol};
+        }
+    }
+}
+
+static int count_open_neighbors(const GameState *game, int row, int col) {
+    const int dr[4] = {-1, 1, 0, 0};
+    const int dc[4] = {0, 0, -1, 1};
+    int count = 0;
+
+    for (int i = 0; i < 4; ++i) {
+        int nextRow = row + dr[i];
+        int nextCol = col + dc[i];
+
+        if (nextRow < 0 || nextRow >= game->rows || nextCol < 0 || nextCol >= game->cols) {
+            continue;
+        }
+        if (game->map[nextRow][nextCol] != '#') {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+static Point find_farthest_point(const GameState *game, int dist[MAX_ROWS][MAX_COLS]) {
+    Point farthest = {1, 1};
+    int bestDistance = -1;
+
+    for (int r = 1; r < game->rows - 1; ++r) {
+        for (int c = 1; c < game->cols - 1; ++c) {
+            if (game->map[r][c] == '#' || dist[r][c] <= bestDistance) {
+                continue;
+            }
+            bestDistance = dist[r][c];
+            farthest.row = r;
+            farthest.col = c;
+        }
+    }
+
+    return farthest;
+}
+
+static int choose_random_empty_cell(
+    const GameState *game,
+    int dist[MAX_ROWS][MAX_COLS],
+    int minDistance,
+    int requireDeadEnd,
+    int requireOpenArea,
+    Point *chosen
+) {
+    Point candidates[MAX_ROWS * MAX_COLS];
+    int candidateCount = 0;
+
+    for (int threshold = minDistance; threshold >= 1; --threshold) {
+        candidateCount = 0;
+
+        for (int r = 1; r < game->rows - 1; ++r) {
+            for (int c = 1; c < game->cols - 1; ++c) {
+                if (game->map[r][c] != '.') {
+                    continue;
+                }
+                if (r == game->startRow && c == game->startCol) {
+                    continue;
+                }
+                if (dist[r][c] < threshold) {
+                    continue;
+                }
+                if (requireDeadEnd && count_open_neighbors(game, r, c) != 1) {
+                    continue;
+                }
+                if (requireOpenArea && count_open_neighbors(game, r, c) < 2) {
+                    continue;
+                }
+                candidates[candidateCount++] = (Point){r, c};
+            }
+        }
+
+        if (candidateCount > 0) {
+            *chosen = candidates[rand() % candidateCount];
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void place_tile_items(
+    GameState *game,
+    char tile,
+    int count,
+    int dist[MAX_ROWS][MAX_COLS],
+    int minDistance,
+    int preferDeadEnd
+) {
+    for (int i = 0; i < count; ++i) {
+        Point target;
+
+        if (!choose_random_empty_cell(game, dist, minDistance, preferDeadEnd, 0, &target)) {
+            if (!choose_random_empty_cell(game, dist, minDistance, 0, 0, &target)) {
+                return;
+            }
+        }
+
+        game->map[target.row][target.col] = tile;
+        if (tile == 'O') {
+            add_teleport(game, target.row, target.col);
+        }
+    }
+}
+
+static int enemy_spawn_occupied(const GameState *game, int row, int col) {
+    for (int i = 0; i < game->enemyCount; ++i) {
+        if (game->enemies[i].row == row && game->enemies[i].col == col) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void place_enemies(GameState *game, const LevelConfig *level, int dist[MAX_ROWS][MAX_COLS], int minDistance) {
+    for (int i = 0; i < level->enemyCount; ++i) {
+        Point target;
+        int placed = 0;
+
+        for (int attempt = 0; attempt < 24; ++attempt) {
+            if (!choose_random_empty_cell(game, dist, minDistance, 0, 1, &target)) {
+                break;
+            }
+            if (enemy_spawn_occupied(game, target.row, target.col)) {
+                continue;
+            }
+            add_enemy(game, target.row, target.col, level->enemyTypes[i]);
+            placed = 1;
+            break;
+        }
+
+        if (!placed) {
+            return;
+        }
+    }
+}
+
+static void generate_level(GameState *game, const LevelConfig *level) {
+    int dist[MAX_ROWS][MAX_COLS];
+    Point door;
+
+    initialize_map(game, level->rows, level->cols);
+    generate_maze_layout(game);
+
+    game->startRow = 1;
+    game->startCol = 1;
+    game->playerRow = 1;
+    game->playerCol = 1;
+    game->map[1][1] = '.';
+
+    compute_distances(game, game->startRow, game->startCol, dist);
+    door = find_farthest_point(game, dist);
+    game->map[door.row][door.col] = 'D';
+
+    game->requiredKeys = level->keyTotal;
+    place_tile_items(game, 'K', level->keyTotal, dist, 6, 0);
+    place_tile_items(game, 'C', level->goldTotal, dist, 4, 0);
+    place_tile_items(game, 'O', level->teleportPairs * 2, dist, 4, 1);
+    place_enemies(game, level, dist, 7);
+}
+
 static void load_level(GameState *game, int levelIndex, int keepProgress) {
-    const LevelTemplate *level = &LEVELS[levelIndex];
+    const LevelConfig *level = &LEVELS[levelIndex];
 
     if (!keepProgress) {
         game->hp = 3;
@@ -346,42 +558,15 @@ static void load_level(GameState *game, int levelIndex, int keepProgress) {
     }
 
     game->currentLevel = levelIndex;
-    game->rows = level->rows;
-    game->cols = level->cols;
     game->keyCount = 0;
-    game->requiredKeys = 0;
     game->enemyCount = 0;
     game->teleportCount = 0;
-
-    for (int r = 0; r < game->rows; ++r) {
-        for (int c = 0; c < game->cols; ++c) {
-            char tile = level->data[r][c];
-
-            if (tile == 'P') {
-                game->playerRow = r;
-                game->playerCol = c;
-                game->startRow = r;
-                game->startCol = c;
-                game->map[r][c] = '.';
-            } else if (is_enemy_symbol(tile)) {
-                add_enemy(game, r, c, tile);
-                game->map[r][c] = '.';
-            } else {
-                game->map[r][c] = tile;
-                if (tile == 'O') {
-                    add_teleport(game, r, c);
-                } else if (tile == 'K') {
-                    game->requiredKeys++;
-                }
-            }
-        }
-        game->map[r][game->cols] = '\0';
-    }
+    generate_level(game, level);
 
     snprintf(
         game->message,
         sizeof(game->message),
-        "已进入第 %d 关。先找钥匙，再去开门。",
+        "已进入第 %d 关。迷宫已重新生成，先找钥匙，再去开门。",
         game->currentLevel + 1
     );
 }
@@ -397,12 +582,12 @@ static const char *display_symbol(char tile) {
     switch (tile) {
         case '#':
             return "█";
+        case '.':
+            return " ";
         case 'P':
             return "@";
         case 'C':
             return "$";
-        case 'T':
-            return "!";
         case 'H':
         case 'V':
         case 'S':
@@ -434,7 +619,7 @@ static void draw_game(const GameState *game) {
         game->steps
     );
     printf("操作: 直接按 w/a/s/d 移动, p 保存, o 读档, q 退出\n");
-    printf("图例: █墙 @玩家 D门 K钥匙 $金币 !陷阱 O传送 X敌人\n");
+    printf("图例: █墙 @玩家 D门 K钥匙 $金币 O传送 X敌人\n");
     printf("消息: %s\n\n", game->message);
 
     for (int r = 0; r < game->rows; ++r) {
@@ -632,11 +817,6 @@ static int handle_special_tile(GameState *game) {
         game->gold++;
         game->map[game->playerRow][game->playerCol] = '.';
         set_message(game, "你捡到了一枚金币。");
-    } else if (tile == 'T') {
-        apply_player_damage(game, "你踩中了陷阱。");
-        if (game->hp <= 0) {
-            return -1;
-        }
     } else if (tile == 'O') {
         int targetRow;
         int targetCol;
@@ -804,6 +984,7 @@ int main(void) {
     unsigned long long lastEnemyMove = 0;
 
     setup_console_encoding();
+    seed_random();
     clear_screen();
     printf("=== 迷宫游戏（字符版）===\n");
     printf("1. 新游戏\n");
