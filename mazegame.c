@@ -1,26 +1,28 @@
-#include <ctype.h>
-#include <locale.h>
+#include <ctype.h>//字符处理
+#include <locale.h>//为中文环境做铺垫
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#ifdef _WIN32
+#ifdef _WIN32//windows特有的头文件和函数 
 #include <conio.h>
 #include <windows.h>
 #endif
 
-#define LEVEL_COUNT 3
-#define MAX_ROWS 24
-#define MAX_COLS 44
-#define MAX_TELEPORTS 8
-#define SAVE_FILE "save.txt"
+#define LEVEL_COUNT 3//一共有3关
+#define MAX_ROWS 24//地图最大行数是24
+#define MAX_COLS 44//地图最大列数是44
+#define MAX_TELEPORTS 8//最多允许存在8个传送点（4对）
+#define SAVE_SLOT_COUNT 3//最多可保存3份文档
+#define SAVE_FILE_PREFIX "save"
+#define SAVE_FILE_SUFFIX ".txt"
 
-typedef struct {
+typedef struct {//坐标结构体
     int row;
     int col;
 } Point;
 
-typedef struct {
+typedef struct {//关卡配置结构体
     int rows;
     int cols;
     int keyTotal;
@@ -216,6 +218,50 @@ static void reset_tile_color(void) {
 
 static void set_message(GameState *game, const char *text) {
     snprintf(game->message, sizeof(game->message), "%s", text);
+}
+
+static int prompt_save_slot(const char *actionText) {
+    char input[32];
+
+    printf("\n请选择%s存档槽 (1-%d): ", actionText, SAVE_SLOT_COUNT);
+    fflush(stdout);
+    if (fgets(input, sizeof(input), stdin) == NULL) {
+        return 0;
+    }
+    if (input[0] < '1' || input[0] > ('0' + SAVE_SLOT_COUNT)) {
+        return 0;
+    }
+    return input[0] - '0';
+}
+
+static void get_save_file_path(int slot, char *buffer, size_t size) {
+#ifdef _WIN32
+    DWORD length = GetModuleFileNameA(NULL, buffer, (DWORD)size);
+
+    if (length > 0 && length < size) {
+        char *lastSlash = strrchr(buffer, '\\');
+        char *lastForwardSlash = strrchr(buffer, '/');
+        char *separator = lastSlash;
+
+        if (lastForwardSlash != NULL && (separator == NULL || lastForwardSlash > separator)) {
+            separator = lastForwardSlash;
+        }
+
+        if (separator != NULL) {
+            separator[1] = '\0';
+            snprintf(
+                buffer + strlen(buffer),
+                size - strlen(buffer),
+                "%s%d%s",
+                SAVE_FILE_PREFIX,
+                slot,
+                SAVE_FILE_SUFFIX
+            );
+            return;
+        }
+    }
+#endif
+    snprintf(buffer, size, "%s%d%s", SAVE_FILE_PREFIX, slot, SAVE_FILE_SUFFIX);
 }
 
 static int tile_blocked_for_player(char tile) {
@@ -619,8 +665,16 @@ static int is_inside_map(const GameState *game, int row, int col) {
     return row >= 0 && row < game->rows && col >= 0 && col < game->cols;
 }
 
-static int save_game(const GameState *game) {
-    FILE *fp = fopen(SAVE_FILE, "w");
+static int save_game(const GameState *game, int slot) {
+    char savePath[MAX_PATH];
+    FILE *fp;
+
+    if (slot < 1 || slot > SAVE_SLOT_COUNT) {
+        return 0;
+    }
+
+    get_save_file_path(slot, savePath, sizeof(savePath));
+    fp = fopen(savePath, "w");
 
     if (fp == NULL) {
         return 0;
@@ -656,8 +710,16 @@ static int save_game(const GameState *game) {
     return 1;
 }
 
-static int load_game(GameState *game) {
-    FILE *fp = fopen(SAVE_FILE, "r");
+static int load_game(GameState *game, int slot) {
+    char savePath[MAX_PATH];
+    FILE *fp;
+
+    if (slot < 1 || slot > SAVE_SLOT_COUNT) {
+        return 0;
+    }
+
+    get_save_file_path(slot, savePath, sizeof(savePath));
+    fp = fopen(savePath, "r");
 
     if (fp == NULL) {
         return 0;
@@ -679,13 +741,14 @@ static int load_game(GameState *game) {
             &game->startRow,
             &game->startCol,
             &game->teleportCount
-        ) != 12) {
+        ) != 13) {
         fclose(fp);
         return 0;
     }
 
-    if (game->rows > MAX_ROWS || game->cols > MAX_COLS ||
-        game->teleportCount > MAX_TELEPORTS) {
+    if (game->rows <= 0 || game->rows > MAX_ROWS ||
+        game->cols <= 0 || game->cols > MAX_COLS ||
+        game->teleportCount < 0 || game->teleportCount > MAX_TELEPORTS) {
         fclose(fp);
         return 0;
     }
@@ -825,10 +888,12 @@ int main(void) {
     }
 
     if (input[0] == '2') {
+        int slot;
         memset(&game, 0, sizeof(game));
-        if (!load_game(&game)) {
+        slot = prompt_save_slot("读取");
+        if (slot == 0 || !load_game(&game, slot)) {
             start_new_game(&game);
-            set_message(&game, "没有找到有效存档，已开始新游戏");
+            set_message(&game, "读取失败或存档不存在，已开始新游戏");
         }
     } else {
         start_new_game(&game);
@@ -863,20 +928,28 @@ int main(void) {
             case 'd':
                 stateAfterMove = process_move(&game, 0, 1);
                 break;
-            case 'p':
-                if (save_game(&game)) {
-                    set_message(&game, "保存成功");
+            case 'p': {
+                int slot = prompt_save_slot("保存到");
+                if (slot != 0 && save_game(&game, slot)) {
+                    snprintf(game.message, sizeof(game.message), "已保存到 %d 号存档", slot);
+                } else if (slot == 0) {
+                    set_message(&game, "无效存档槽，请输入 1 到 3");
                 } else {
                     set_message(&game, "保存失败");
                 }
                 continue;
-            case 'o':
-                if (load_game(&game)) {
-                    set_message(&game, "读档成功");
+            }
+            case 'o': {
+                int slot = prompt_save_slot("读取");
+                if (slot != 0 && load_game(&game, slot)) {
+                    snprintf(game.message, sizeof(game.message), "已读取 %d 号存档", slot);
+                } else if (slot == 0) {
+                    set_message(&game, "无效存档槽，请输入 1 到 3");
                 } else {
-                    set_message(&game, "读档失败，没有找到有效存档");
+                    set_message(&game, "读档失败，该存档槽没有有效存档");
                 }
                 continue;
+            }
             case 'q':
                 running = 0;
                 continue;
